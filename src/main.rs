@@ -34,7 +34,10 @@ async fn handle_get_coin_price(
     let id = coingecko::get_id_from_symbol(&coin)
         .await
         .map_err(|e| match e {
-            GetIdFromSymbolError::SymbolNotFound => (StatusCode::NOT_FOUND),
+            GetIdFromSymbolError::SymbolNotFound => {
+                warn!("no coingecko id for symbol {}", coin);
+                StatusCode::NOT_FOUND
+            }
             GetIdFromSymbolError::ReqwestError(error) => {
                 error!("failed to get id, {}", error);
                 error
@@ -75,7 +78,7 @@ async fn handle_get_coin_price_change(
         .await
         .map_err(|error| match error {
             GetIdFromSymbolError::SymbolNotFound => {
-                warn!("failed to find symbol {}", coin);
+                warn!("no coingecko id for symbol {}", coin);
                 StatusCode::NOT_FOUND
             }
             GetIdFromSymbolError::ReqwestError(error) => {

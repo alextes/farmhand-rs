@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use cached::proc_macro::cached;
+use log::warn;
 use phf::phf_map;
 use serde::Deserialize;
 
@@ -87,10 +88,15 @@ fn make_price_url(id: &str, base: &str) -> String {
 type PriceEnvelope = HashMap<String, HashMap<String, f64>>;
 
 pub async fn get_price(id: &str, base: &str) -> reqwest::Result<PriceEnvelope> {
-    reqwest::get(make_price_url(&id, &base))
-        .await?
-        .json::<PriceEnvelope>()
-        .await
+    let res = reqwest::get(make_price_url(&id, &base)).await?;
+
+    match res.error_for_status() {
+        Ok(res) => res.json::<PriceEnvelope>().await,
+        Err(error) => {
+            warn!("failed to find price, {}", error);
+            Err(error)
+        }
+    }
 }
 
 fn make_market_chart_url(id: &str, base: &str, coingecko_days_ago: &u32) -> String {
