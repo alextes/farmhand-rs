@@ -5,13 +5,15 @@ authors = ["alextes <alex.tesfamichael@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-axum = {version = "0.5"}
-tokio = { version = "1", features = ["full"] }
-cached = "0.34.0"
+axum = "0.5"
+axum-macros = "0.2"
+cached = "0.34"
+chrono = "0.4"
+env_logger = "0.9"
+log = "0.4"
+lru = "0.7"
+phf = { version = "0.10", features = ["macros"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
-phf = { version = "0.10", features = ["macros"] }
-axum-macros = "0.2.1"
-serde_json = "1.0"
-log = "0.4.17"
-env_logger = "0.9.0"
+serde_json = "1"
+tokio = { version = "1", features = ["full", "sync"] }

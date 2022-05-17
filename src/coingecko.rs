@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use cached::proc_macro::cached;
 use phf::phf_map;
 use serde::Deserialize;
-use std::collections::HashMap;
 
 const ID_URL: &str = "https://api.coingecko.com/api/v3/coins/list";
 
@@ -29,7 +30,7 @@ const ID_OVERRIDES_MAP: phf::Map<&'static str, &'static str> = phf_map! {
 
 type IdMap = HashMap<String, Vec<String>>;
 
-#[cached(time = 14400, result = true)]
+#[cached(time = 14400, result = true, sync_writes = true)]
 pub async fn get_symbol_id_map() -> reqwest::Result<IdMap> {
     let coin_ids = get_coin_list().await?;
     let mut symbol_id_map = HashMap::new();
@@ -50,6 +51,32 @@ pub async fn get_symbol_id_map() -> reqwest::Result<IdMap> {
 
     Ok(symbol_id_map)
 }
+
+pub enum GetIdFromSymbolError {
+    SymbolNotFound,
+    ReqwestError(reqwest::Error),
+}
+
+impl From<reqwest::Error> for GetIdFromSymbolError {
+    fn from(error: reqwest::Error) -> Self {
+        GetIdFromSymbolError::ReqwestError(error)
+    }
+}
+
+/// Get a CoinGecko id associated with a symbol if any exists. Returns the first when multiple exist.
+pub async fn get_id_from_symbol(symbol: &str) -> Result<String, GetIdFromSymbolError> {
+    let symbol_id_map = get_symbol_id_map().await?;
+
+    symbol_id_map
+        .get(symbol)
+        .ok_or(GetIdFromSymbolError::SymbolNotFound)
+        .map(|ids| {
+            ids.first()
+                .expect("id lists associated with symbols should be non-empty")
+                .to_string()
+        })
+}
+
 fn make_price_url(id: &str, base: &str) -> String {
     format!(
         "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies={}",
@@ -57,29 +84,53 @@ fn make_price_url(id: &str, base: &str) -> String {
     )
 }
 
-pub enum GetPriceError {
-    PriceNotFound,
-    ReqwestError(reqwest::Error),
-}
+type PriceEnvelope = HashMap<String, HashMap<String, f64>>;
 
-impl From<reqwest::Error> for GetPriceError {
-    fn from(error: reqwest::Error) -> Self {
-        GetPriceError::ReqwestError(error)
-    }
-}
-
-#[cached(time = 3600, result = true)]
-pub async fn get_price(id: String, base: String) -> Result<f64, GetPriceError> {
-    let price_envelope = reqwest::get(make_price_url(&id, &base))
+pub async fn get_price(id: &str, base: &str) -> reqwest::Result<PriceEnvelope> {
+    reqwest::get(make_price_url(&id, &base))
         .await?
-        .json::<HashMap<String, HashMap<String, f64>>>()
-        .await?;
+        .json::<PriceEnvelope>()
+        .await
+}
 
-    match price_envelope
-        .get(&id)
-        .and_then(|price_map| price_map.get(&base))
-    {
-        None => Err(GetPriceError::PriceNotFound),
-        Some(price) => Ok(*price),
+fn make_market_chart_url(id: &str, base: &str, coingecko_days_ago: &u32) -> String {
+    format!(
+        "https://api.coingecko.com/api/v3/coins/{id}/market_chart?vs_currency={base}&days={coingecko_days_ago}&interval=daily",
+        id=id,
+        base=base,
+        coingecko_days_ago=coingecko_days_ago
+    )
+}
+
+/// Unix timestamp in miliseconds.
+type MsTimestamp = i64;
+/// A price for a cryptocurrency.
+type Price = f64;
+type PriceInTime = (MsTimestamp, Price);
+
+/// CoinGecko market data by day for a single coin.
+#[derive(Clone, Debug, Deserialize)]
+struct MarketChart {
+    prices: Vec<PriceInTime>,
+}
+
+pub async fn get_market_chart(
+    id: &str,
+    base: &str,
+    days_ago: &u32,
+) -> reqwest::Result<Vec<PriceInTime>> {
+    // CoinGecko uses 'days' as today up to but excluding n 'days' ago, we want
+    // including so we add 1 here.
+    let coingecko_days_ago = days_ago + 1;
+
+    let url = make_market_chart_url(id, base, &coingecko_days_ago);
+    let res = reqwest::get(&url).await?;
+
+    match res.error_for_status() {
+        Ok(res) => res
+            .json::<MarketChart>()
+            .await
+            .map(|market_chart| market_chart.prices),
+        Err(error) => Err(error),
     }
 }
