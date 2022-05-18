@@ -23,5 +23,5 @@ RUN cargo build --release --bin farmhand
 FROM rust as runtime
 WORKDIR /app
 COPY --from=builder /app/target/release/farmhand /usr/local/bin
-EXPOSE 8080
+EXPOSE 3000
 CMD ["/usr/local/bin/farmhand"]
