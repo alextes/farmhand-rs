@@ -1,14 +1,10 @@
 mod coingecko;
 mod price_changes;
-mod prices;
 
 use axum::{extract::Path, response::IntoResponse, routing::post, Extension, Json, Router};
-use axum_macros::debug_handler;
 use coingecko::GetIdFromSymbolError;
-use log::{error, warn};
 use lru::LruCache;
 use price_changes::HistoricPriceCache;
-use prices::GetPriceError;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
@@ -17,6 +13,7 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 struct State {
+    coingecko_client: reqwest::Client,
     historic_price_cache: HistoricPriceCache,
 }
 
@@ -30,33 +27,34 @@ struct PriceBody {
 async fn handle_get_coin_price(
     Path(coin): Path<String>,
     Json(payload): Json<PriceBody>,
+    Extension(state): Extension<State>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let id = coingecko::get_id_from_symbol(&coin)
+    log::debug!(
+        "get coin price for symbol {}, in base {}",
+        coin,
+        payload.base
+    );
+
+    let id = coingecko::get_id_from_symbol(&state.coingecko_client, &coin)
         .await
         .map_err(|e| match e {
             GetIdFromSymbolError::SymbolNotFound => {
-                warn!("no coingecko id for symbol {}", coin);
+                log::warn!("no coingecko id for symbol {}", coin);
                 StatusCode::NOT_FOUND
             }
             GetIdFromSymbolError::ReqwestError(error) => {
-                error!("failed to get id, {}", error);
+                log::error!("failed to get id, {}", error);
                 error
                     .status()
-                    .map_or_else(|| StatusCode::INTERNAL_SERVER_ERROR, |status| status)
+                    .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR)
             }
         })?;
 
-    let price = prices::get_price(id, payload.base)
-        .await
-        .map_err(|e| match e {
-            GetPriceError::PriceNotFound => StatusCode::NOT_FOUND,
-            GetPriceError::ReqwestError(error) => {
-                error!("failed to get price, {}", error);
-                error
-                    .status()
-                    .map_or_else(|| StatusCode::INTERNAL_SERVER_ERROR, |status| status)
-            }
-        })?;
+    log::debug!("found id {}, for symbol {}", &id, &coin);
+
+    let price = coingecko::get_price(&state.coingecko_client, &id, &payload.base).await?;
+
+    log::debug!("found price {}, for symbol {}", &price, &coin);
 
     Ok(Json(json!({ "price": price })))
 }
@@ -73,45 +71,48 @@ async fn handle_get_coin_price_change(
     Json(payload): Json<PriceChangeBody>,
     Extension(state): Extension<State>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let id = coingecko::get_id_from_symbol(&coin)
+    log::debug!(
+        "get coin price change for {}, in {}, since {} days ago",
+        &coin,
+        &payload.base,
+        &payload.days_ago
+    );
+
+    let id = coingecko::get_id_from_symbol(&state.coingecko_client, &coin)
         .await
         .map_err(|error| match error {
             GetIdFromSymbolError::SymbolNotFound => {
-                warn!("no coingecko id for symbol {}", coin);
+                log::warn!("no coingecko id for symbol {}", coin);
                 StatusCode::NOT_FOUND
             }
             GetIdFromSymbolError::ReqwestError(error) => {
-                error!("failed to get price, {}", error);
+                log::error!("failed to get price, {}", error);
                 error
                     .status()
                     .map_or_else(|| StatusCode::INTERNAL_SERVER_ERROR, |status| status)
             }
         })?;
 
-    price_changes::get_historic_price_with_cache(
+    let price_change = price_changes::get_historic_price_with_cache(
+        &state.coingecko_client,
         state.historic_price_cache,
         &id,
         &payload.base,
         &payload.days_ago,
     )
-    .await
-    .map_err(|error| match error {
-        GetPriceError::PriceNotFound => StatusCode::NOT_FOUND,
-        GetPriceError::ReqwestError(error) => {
-            error!("failed to get price, {}", error);
-            error
-                .status()
-                .map_or_else(|| StatusCode::INTERNAL_SERVER_ERROR, |status| status)
-        }
-    })
-    .map(|price_change| Json(json!({ "priceChange": price_change })))
+    .await?;
+
+    Ok(Json(json!({ "priceChange": price_change })))
 }
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
+    let coingecko_client = reqwest::Client::new();
+
     let shared_state = State {
+        coingecko_client,
         historic_price_cache: Arc::new(Mutex::new(LruCache::new(10_000))),
     };
 

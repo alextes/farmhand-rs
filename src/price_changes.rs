@@ -1,7 +1,4 @@
-use crate::{
-    coingecko,
-    prices::{self, GetPriceError},
-};
+use crate::coingecko::{self, GetPriceError};
 use chrono::{Duration, DurationRound, TimeZone, Utc};
 use lru::LruCache;
 use std::{convert::TryInto, hash::Hash, sync::Arc};
@@ -27,6 +24,7 @@ fn timestamp_from_days_ago(days_ago: &u32) -> i64 {
 }
 
 pub async fn get_historic_price_with_cache(
+    client: &reqwest::Client,
     historic_price_cache: HistoricPriceCache,
     id: &str,
     base: &str,
@@ -52,7 +50,7 @@ pub async fn get_historic_price_with_cache(
         Some(price) => *price,
     };
 
-    let current_price = prices::get_price(id.to_string(), base.to_string()).await?;
+    let current_price = coingecko::get_price(client, id, base).await?;
 
     Ok(current_price / historic_price - 1f64)
 }

@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
-use cached::proc_macro::cached;
-use log::warn;
+use cached::proc_macro::{cached, once};
 use phf::phf_map;
+use reqwest::StatusCode;
 use serde::Deserialize;
+use std::{collections::HashMap, fmt::Display};
 
 const ID_URL: &str = "https://api.coingecko.com/api/v3/coins/list";
 
@@ -14,9 +13,8 @@ pub struct CoinId {
     pub name: String,
 }
 
-pub async fn get_coin_list() -> reqwest::Result<Vec<CoinId>> {
-    let coin_list = reqwest::get(ID_URL).await?.json::<Vec<CoinId>>().await?;
-    Ok(coin_list)
+pub async fn get_coin_list(client: &reqwest::Client) -> reqwest::Result<Vec<CoinId>> {
+    client.get(ID_URL).send().await?.json::<Vec<CoinId>>().await
 }
 
 // TODO: getIdMapSortedByMarketCap
@@ -31,11 +29,13 @@ const ID_OVERRIDES_MAP: phf::Map<&'static str, &'static str> = phf_map! {
 
 type IdMap = HashMap<String, Vec<String>>;
 
-#[cached(time = 14400, result = true, sync_writes = true)]
-pub async fn get_symbol_id_map() -> reqwest::Result<IdMap> {
-    let coin_ids = get_coin_list().await?;
-    let mut symbol_id_map = HashMap::new();
+#[once(time = 14400, result = true, sync_writes = true)]
+pub async fn get_symbol_id_map(client: &reqwest::Client) -> reqwest::Result<IdMap> {
+    log::debug!("getting fresh symbol id map from coingecko");
 
+    let coin_ids = get_coin_list(client).await?;
+
+    let mut symbol_id_map = HashMap::new();
     for coin in coin_ids {
         symbol_id_map
             .entry(coin.symbol)
@@ -65,8 +65,11 @@ impl From<reqwest::Error> for GetIdFromSymbolError {
 }
 
 /// Get a CoinGecko id associated with a symbol if any exists. Returns the first when multiple exist.
-pub async fn get_id_from_symbol(symbol: &str) -> Result<String, GetIdFromSymbolError> {
-    let symbol_id_map = get_symbol_id_map().await?;
+pub async fn get_id_from_symbol(
+    client: &reqwest::Client,
+    symbol: &str,
+) -> Result<String, GetIdFromSymbolError> {
+    let symbol_id_map = get_symbol_id_map(client).await?;
 
     symbol_id_map
         .get(symbol)
@@ -85,18 +88,71 @@ fn make_price_url(id: &str, base: &str) -> String {
     )
 }
 
-type PriceEnvelope = HashMap<String, HashMap<String, f64>>;
+pub enum GetPriceError {
+    NotFound(String),
+    ReqwestError(reqwest::Error),
+}
 
-pub async fn get_price(id: &str, base: &str) -> reqwest::Result<PriceEnvelope> {
-    let res = reqwest::get(make_price_url(&id, &base)).await?;
-
-    match res.error_for_status() {
-        Ok(res) => res.json::<PriceEnvelope>().await,
-        Err(error) => {
-            warn!("failed to find price, {}", error);
-            Err(error)
+impl Display for GetPriceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReqwestError(error) => error.fmt(f),
+            Self::NotFound(id) => write!(f, "price not found for symbol {}", id),
         }
     }
+}
+
+impl From<GetPriceError> for StatusCode {
+    fn from(error: GetPriceError) -> Self {
+        match error {
+            GetPriceError::NotFound(_) => StatusCode::NOT_FOUND,
+            GetPriceError::ReqwestError(error) => error
+                .status()
+                .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+}
+
+impl From<reqwest::Error> for GetPriceError {
+    fn from(error: reqwest::Error) -> Self {
+        GetPriceError::ReqwestError(error)
+    }
+}
+
+type PriceResponse = HashMap<String, HashMap<String, f64>>;
+
+#[cached(
+    time = 3600,
+    result = true,
+    sync_writes = true,
+    key = "String",
+    convert = r#"{ format!("{}{}", id, base) }"#
+)]
+pub async fn get_price(
+    client: &reqwest::Client,
+    id: &str,
+    base: &str,
+) -> Result<f64, GetPriceError> {
+    log::debug!("getting fresh price for id {}, in base {}", id, base);
+
+    let res = client
+        .get(make_price_url(&id, &base))
+        .send()
+        .await?
+        .json::<PriceResponse>()
+        .await?;
+
+    // CoinGecko returns a 200 response with an empty body for ids that are not found. Expect an
+    // empty HashMap here.
+    res.get(id)
+        .and_then(|base_map| base_map.get(base))
+        .map_or_else(
+            || {
+                log::debug!("coingecko price for id {}, not found", id);
+                Err(GetPriceError::NotFound(id.to_string()))
+            },
+            |price| Ok(price.clone()),
+        )
 }
 
 fn make_market_chart_url(id: &str, base: &str, coingecko_days_ago: &u32) -> String {
