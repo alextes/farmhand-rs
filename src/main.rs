@@ -68,7 +68,6 @@ struct PriceChangeBody {
     days_ago: u32,
 }
 
-#[debug_handler]
 async fn handle_get_coin_price_change(
     Path(coin): Path<String>,
     Json(payload): Json<PriceChangeBody>,
