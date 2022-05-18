@@ -18,4 +18,6 @@ steps:
       - "europe-west1"
       - "--platform"
       - "managed"
-timeout: 3600s
+timeout: 7200s
+options:
+  machineType: "E2_HIGHCPU_8"
