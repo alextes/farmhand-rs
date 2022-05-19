@@ -5,7 +5,7 @@ steps:
       - --destination=eu.gcr.io/$PROJECT_ID/farmhand:$COMMIT_SHA
       - --cache=true
       - --cache-ttl=168h
-    timeout: 1200s
+    timeout: 1800s
   # Deploy container image to Cloud Run
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
@@ -19,7 +19,3 @@ steps:
       - "europe-west1"
       - "--platform"
       - "managed"
-    timeout: 1200s
-timeout: 1200s
-options:
-  machineType: "E2_HIGHCPU_8"
