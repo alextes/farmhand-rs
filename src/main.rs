@@ -1,4 +1,5 @@
 mod coingecko;
+mod config;
 mod price_changes;
 
 use axum::{extract::Path, response::IntoResponse, routing::post, Extension, Json, Router};
@@ -109,6 +110,8 @@ async fn handle_get_coin_price_change(
 async fn main() {
     env_logger::init();
 
+    let config = config::Config::new();
+
     let coingecko_client = reqwest::Client::new();
 
     let shared_state = State {
@@ -124,8 +127,15 @@ async fn main() {
         )
         .layer(Extension(shared_state));
 
-    axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    let address = format!("0.0.0.0:{}", config.port)
+        .parse()
+        .expect("address with port is not a valid address");
+
+    log::info!("listening on port {}", config.port);
+
+    let server = axum::Server::bind(&address).serve(app.into_make_service());
+
+    if let Err(err) = server.await {
+        eprintln!("server error: {}", err)
+    }
 }
